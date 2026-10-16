@@ -176,6 +176,15 @@ void ElasticCollisionPerez (
                 continue;
             }
 
+            // NEW: skip particles that violate the quasi-static approximation
+            // (psi <= 0 or NaN). !(x > 0) is also true for NaN.
+            // For beam collisions psi1 holds the beam uz, so only check it for plasma.
+            if ((!is_beam_coll && !(psi1[I1[i1]] > T_R(0.0))) || !(psi2[I2[i2]] > T_R(0.0))) {
+                ++i1; if ( i1 == static_cast<int>(I1e) ) { i1 = I1s; }
+                ++i2; if ( i2 == static_cast<int>(I2e) ) { i2 = I2s; }
+                continue;
+            }
+
             // particle's Lorentz factor
             amrex::Real g1 = is_beam_coll ? std::sqrt( 1._rt
                 + u1x[I1[i1]]*u1x[I1[i1]] + u1y[I1[i1]]*u1y[I1[i1]] + psi1[I1[i1]]*psi1[I1[i1]] )

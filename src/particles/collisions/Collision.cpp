@@ -180,6 +180,11 @@ Collision::doElectronImpact (
             const amrex::Real w2 = ptd2.rdata(PlasmaIdx::w)[i2];
             int ion_lev2 = ptd2.idata(PlasmaIdx::ion_lev)[i2];
 
+            // NEW: skip QSA-violating particles (psi <= 0 or NaN)
+            if (!(psi1 > 0._rt) || !(psi2 > 0._rt)) {
+                return CollisionOutcome{};
+            }
+
             // Already ionized, do not collide
             if (ion_atomic_number == 1) {           // H
                 if (ion_lev2 > 0) {
