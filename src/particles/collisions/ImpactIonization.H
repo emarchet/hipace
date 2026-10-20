@@ -45,7 +45,7 @@
  *        remaining after subtracting the ionization energy. The root is found by bisection.
  *
  *        The model assumes that particles 1 and 3 are electrons with equal mass.
- *        Compile with USE_ASSERTION=TRUE to enable checks for NaN or Inf updated momenta.
+ *        The final state is checked for NaN or Inf momenta.
  */
 
 template <typename T_R>
@@ -122,7 +122,6 @@ ImpactIonizationOutgoing<T_R> ComputeImpactIonizationOutgoing (
                 false,
                 "ImpactIonization: beta < 0!"
             );
-            return out;
         }
     }
 
@@ -131,7 +130,6 @@ ImpactIonizationOutgoing<T_R> ComputeImpactIonizationOutgoing (
             false,
             "ImpactIonization: beta too close to 1!"
         );
-        return out;
     }
 
     T_R const gc = T_R(1.0) / std::sqrt( T_R(1.0) - beta2 );
@@ -221,9 +219,7 @@ ImpactIonizationOutgoing<T_R> ComputeImpactIonizationOutgoing (
     // - C is found by bisection so that total relativistic KE = Eout.
     // ------------------------------------------------------------------
 
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        std::abs(m1 - m3) < T_R(1.0e-10) * m1,
-        "ImpactIonization: equal momentum assumption requires m1 == m3 (both electrons)");
+    // m1 == m3 (both electrons) is checked once in Collision::ReadParameters
 
     // Sample independent isotropic unit vectors for the two electrons
     T_R const cos_theta1 = T_R(2.0) * amrex::Random(engine) - T_R(1.0);

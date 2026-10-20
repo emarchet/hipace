@@ -276,7 +276,7 @@ Hipace::ReadParameters ()
     queryWithParser(pph, "impact_ionization", m_impact_names);
     for (int i = 0; i != m_impact_names.size(); ++i) {
         m_all_impacts.emplace_back(Collision());
-        m_all_impacts.back().ReadParameters(m_multi_plasma.m_names, m_impact_names[i]);
+        m_all_impacts.back().ReadParameters(m_multi_plasma, m_impact_names[i]);
     }
 
     // external fields applied to the grid

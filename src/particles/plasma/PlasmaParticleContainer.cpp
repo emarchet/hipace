@@ -183,6 +183,12 @@ PlasmaParticleContainer::ReadParameters ()
         queryWithParserAlt(pp, "prevent_centered_particle", m_prevent_centered_particle, pp_alt);
     }
 
+    // boundary temperature of this species, defaults to boundary.temperature_in_ev
+    amrex::ParmParse ppb("boundary");
+    m_boundary_temperature = 1e-4;
+    queryWithParser(ppb, "temperature_in_ev", m_boundary_temperature);
+    queryWithParser(pp, "boundary_temperature_in_ev", m_boundary_temperature);
+
     queryWithParserAlt(pp, "max_qsa_weighting_factor", m_max_qsa_weighting_factor, pp_alt);
 
     queryWithParserAlt(pp, "reorder_period", m_reorder_period, pp_alt);

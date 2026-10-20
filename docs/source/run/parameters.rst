@@ -1488,7 +1488,6 @@ WARNING: this module is in development.
 HiPACE++ proposes an implementation of [Perez et al., Phys. Plasmas 19, 083104 (2012)], inherited from WarpX,
 for collisions between plasma-plasma and beam-plasma.
 As collisions depend on the physical density, in normalized units `hipace.background_density_SI` must be specified.
-Please note that the impact ionization module is currently under development, and SI units are always required.
 
 * ``hipace.collisions`` (list of `strings`) optional
     List of names of binary elastic Coulomb collisions.
@@ -1505,13 +1504,14 @@ Please note that the impact ionization module is currently under development, an
 
 * ``<collision_name>.collision_period`` (`integer`) optional (default `1`)
     Number of :math:`\zeta` slices between applying the elastic collision operator (useful when you are in a fairly collisionless regime, but still want to calculate elastic collisions). The timestep used for collisions is multiplied by this factor. Only applies to plasma-plasma collisions.
-    
+
 * ``hipace.impact_ionization`` (list of `strings`) optional
     List of names of binary inelastic Coulomb collisions.
     Each will represent collisions between 2 plasma species.
     Three species must be specified: the projectile, the target (ion or neutral atom), and the product (electron).
     Currently only impact ionization between electrons and another species, which might be ions or neutral atoms, is implemented.
     Please note that the impact ionization module is currently under development, and SI units are always required.
+    It requires a double-precision build (``HiPACE_PRECISION=DOUBLE``).
 
 * ``<impact_name>.type`` (string) optional
     Type of impact ionization. Currently, only `electron_impact` is implemented.
@@ -1523,10 +1523,11 @@ Please note that the impact ionization module is currently under development, an
 * ``<impact name>.target`` (string) optional
     The name of the target species for impact ionization.
     The species must be defined according to `Plasma parameters`.
+    It must be a different species from the electrons and needs ``<target>.can_impact_ionize = 1``.
 
 * ``<impact name>.new_electron`` (string) optional
     The name of the product species for impact ionization.
-    The species must be defined according to `Plasma parameters` and should be an electron species.
+    The species must be defined according to `Plasma parameters` and must be an electron species.
     In electron impacts, initial and newly created electrons can be treated as one single species
     simply by using the same name for the projectile and the new electrons.
     However, to treat the new electrons as a separate species, a different name can be used.
