@@ -197,7 +197,7 @@ Collision::doElectronImpact (
             if (ion_lev2 >= ion_atomic_number) {
                 return CollisionOutcome{};
             }
-            if (ion_atomic_number == 18 && ion_lev2 > 3) {   // Ionization arbitrarily stops at Ar 4+
+            if (ion_atomic_number == 18 && ion_lev2 >= 3) {   // Ionization arbitrarily stops at Ar 3+
                 return CollisionOutcome{};
             }
 

@@ -95,6 +95,11 @@ Fields::AllocData (
             Comps[isl].multi_emplace(N_Comps, "Sy", "Sx", "ExmBy", "EypBx", "Ez",
                 "Bx", "By", "Bz", "Psi",
                 "jx_beam", "jy_beam", "jz_beam", "jx", "jy", "rhomjz");
+
+            if (Hipace::m_plasma_divj_deposition_input) {
+                Comps[isl].multi_emplace(N_Comps, "divj_plasma");
+            }
+
             if (Hipace::m_use_laser) {
                 Comps[isl].multi_emplace(N_Comps, "aabs");
             }
@@ -656,6 +661,11 @@ Fields::InitializeSlices (int lev, int islice, const amrex::Vector<amrex::Geomet
         // shifted from the previous WhichSlice::Next
         // with jx and jy initially set to jx_beam and jy_beam
         setVal(0., lev, WhichSlice::This, "chi", "Sy", "Sx", "ExmBy", "EypBx", "jz_beam", "rhomjz");
+    
+        if (Hipace::m_plasma_divj_deposition_input) {
+            setVal(0., lev, WhichSlice::This, "divj_plasma");
+        }
+
         setVal(0., lev, WhichSlice::Next, "jx_beam", "jy_beam");
         if (Hipace::m_do_beam_jz_minus_rho) {
             setVal(0., lev, WhichSlice::This, "rhomjz_beam");
@@ -1024,28 +1034,47 @@ Fields::SolvePoissonPsiExmByEypBxEzBz (amrex::Vector<amrex::Geometry> const& geo
         m_poisson_solver[lev]->SolvePoissonEquation(lhs_Psi);
 
         // Ez: right-hand side 1/(episilon0 *c0 )*(d_x(jx) + d_y(jy))
-        LinCombination(getStagingArea(lev),
-            1._rt/(phys_const.ep0*phys_const.c),
-            derivative<Direction::x>{getField(lev, WhichSlice::This, "jx"), geom[lev]},
-            1._rt/(phys_const.ep0*phys_const.c),
-            derivative<Direction::y>{getField(lev, WhichSlice::This, "jy"), geom[lev]});
+        if (Hipace::m_plasma_divj_deposition) {
+            // beam part: finite differences of jx_beam, jy_beam
+            LinCombination(getStagingArea(lev),
+                1._rt/(phys_const.ep0*phys_const.c),
+                derivative<Direction::x>{getField(lev, WhichSlice::This, "jx_beam"), geom[lev]},
+                1._rt/(phys_const.ep0*phys_const.c),
+                derivative<Direction::y>{getField(lev, WhichSlice::This, "jy_beam"), geom[lev]});
+            // plasma part: analytic divergence deposited by the particles
+            LinCombination(getStagingArea(lev),
+                1._rt, getStagingArea(lev),
+                1._rt/(phys_const.ep0*phys_const.c),
+                getField(lev, WhichSlice::This, "divj_plasma"));
+        } else {
+            LinCombination(getStagingArea(lev),
+                1._rt/(phys_const.ep0*phys_const.c),
+                derivative<Direction::x>{getField(lev, WhichSlice::This, "jx"), geom[lev]},
+                1._rt/(phys_const.ep0*phys_const.c),
+                derivative<Direction::y>{getField(lev, WhichSlice::This, "jy"), geom[lev]});
+        }
 
         SetBoundaryCondition(geom, lev, WhichSlice::This, "Ez", getStagingArea(lev),
             m_poisson_solver[lev]->BoundaryOffset(), m_poisson_solver[lev]->BoundaryFactor());
 
         m_poisson_solver[lev]->SolvePoissonEquation(lhs_Ez);
 
-        // Bz: right-hand side mu_0*(d_y(jx) - d_x(jy))
-        LinCombination(getStagingArea(lev),
-            phys_const.mu0,
-            derivative<Direction::y>{getField(lev, WhichSlice::This, "jx"), geom[lev]},
-            -phys_const.mu0,
-            derivative<Direction::x>{getField(lev, WhichSlice::This, "jy"), geom[lev]});
+        if (Hipace::m_solve_Bz) {
+            // Bz: right-hand side mu_0*(d_y(jx) - d_x(jy))
+            LinCombination(getStagingArea(lev),
+                phys_const.mu0,
+                derivative<Direction::y>{getField(lev, WhichSlice::This, "jx"), geom[lev]},
+                -phys_const.mu0,
+                derivative<Direction::x>{getField(lev, WhichSlice::This, "jy"), geom[lev]});
 
-        SetBoundaryCondition(geom, lev, WhichSlice::This, "Bz", getStagingArea(lev),
-            m_poisson_solver[lev]->BoundaryOffset(), m_poisson_solver[lev]->BoundaryFactor());
+            SetBoundaryCondition(geom, lev, WhichSlice::This, "Bz", getStagingArea(lev),
+                m_poisson_solver[lev]->BoundaryOffset(), m_poisson_solver[lev]->BoundaryFactor());
 
-        m_poisson_solver[lev]->SolvePoissonEquation(lhs_Bz);
+            m_poisson_solver[lev]->SolvePoissonEquation(lhs_Bz);
+        } else {
+            // Bz is not reset per slice in the explicit solver: zero it explicitly
+            lhs_Bz.setVal(0.);
+        }
     }
 
     EnforcePeriodic(false, {Comps[WhichSlice::This]["Psi"],

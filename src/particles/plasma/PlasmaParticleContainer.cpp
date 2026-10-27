@@ -88,7 +88,7 @@ PlasmaParticleContainer::ReadParameters ()
         // Get atomic number and ionization energies from file
         const int ion_element_id = ion_map_ids[element];
         const int ion_atomic_number = ion_atomic_numbers[ion_element_id];
-        m_max_ion_lev = ion_atomic_number;
+        m_max_ion_lev = (ion_atomic_number == 18) ? 3 : ion_atomic_number;  // Ar: stop at Ar3+
 
         m_neutralize_background = false; // change default
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_init_ion_lev >= 0,
@@ -182,6 +182,12 @@ PlasmaParticleContainer::ReadParameters ()
         }
         queryWithParserAlt(pp, "prevent_centered_particle", m_prevent_centered_particle, pp_alt);
     }
+
+    // boundary temperature of this species, defaults to boundary.temperature_in_ev
+    amrex::ParmParse ppb("boundary");
+    m_boundary_temperature = 1e-4;
+    queryWithParser(ppb, "temperature_in_ev", m_boundary_temperature);
+    queryWithParser(pp, "boundary_temperature_in_ev", m_boundary_temperature);
 
     queryWithParserAlt(pp, "max_qsa_weighting_factor", m_max_qsa_weighting_factor, pp_alt);
 
@@ -493,6 +499,7 @@ IonizationModule (const int lev,
 
         long num_ions = ptile_ion.numParticles();
 
+        const int gather_derivative_type = Hipace::m_gather_derivative_type;
 
         // This kernel supports multiple deposition orders (0, 1, 2, 3) at compile time
         // and calculates ionization probability. If ionization occurs, it increments
@@ -524,7 +531,8 @@ IonizationModule (const int lev,
             doGatherShapeN<depos_order_xy>(xp, yp,
                            ExmByp, EypBxp, Ezp, Bxp, Byp, Bzp, slice_arr,
                            psi_comp, ez_comp, bx_comp, by_comp, bz_comp,
-                           dx_inv, dy_inv, x_pos_offset, y_pos_offset);
+                           dx_inv, dy_inv, x_pos_offset, y_pos_offset,
+                           gather_derivative_type);
 
             const amrex::ParticleReal Exp = ExmByp + Byp * phys_const.c;
             const amrex::ParticleReal Eyp = EypBxp - Bxp * phys_const.c;

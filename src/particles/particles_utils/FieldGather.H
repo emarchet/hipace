@@ -42,6 +42,33 @@
  * \param[in] x_pos_offset offset for converting positions to indexes
  * \param[in] y_pos_offset offset for converting positions to indexes
  */
+
+template <int depos_order_xy, int derivative_type>
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void doPsiGatherShapeN (const amrex::Real x,
+                        const amrex::Real y,
+                        amrex::Real& ExmByp,
+                        amrex::Real& EypBxp,
+                        Array3<amrex::Real const> const& slice_arr,
+                        const int psi_comp,
+                        const amrex::Real dx_inv,
+                        const amrex::Real dy_inv)
+{
+    HIPACE_LOOP_UNROLL
+    for (int iy=0; iy<=depos_order_xy+derivative_type; iy++){
+        HIPACE_LOOP_UNROLL
+        for (int ix=0; ix<=depos_order_xy+derivative_type; ix++){
+            auto [shape_y, shape_dy, j] =
+                derivative_shape_factor<derivative_type, depos_order_xy>(y, iy);
+            auto [shape_x, shape_dx, i] =
+                derivative_shape_factor<derivative_type, depos_order_xy>(x, ix);
+            const amrex::Real psip = slice_arr(i, j, psi_comp);
+            ExmByp += (shape_dx * shape_y) * psip * dx_inv;
+            EypBxp += (shape_x * shape_dy) * psip * dy_inv;
+        }
+    }
+}
+
 template <int depos_order_xy>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void doGatherShapeN (const amrex::Real xp,
@@ -61,7 +88,8 @@ void doGatherShapeN (const amrex::Real xp,
                      const amrex::Real dx_inv,
                      const amrex::Real dy_inv,
                      const amrex::Real x_pos_offset,
-                     const amrex::Real y_pos_offset)
+                     const amrex::Real y_pos_offset,
+                     const int derivative_type)
 {
     // x,y direction
     const amrex::Real x = (xp-x_pos_offset)*dx_inv;
@@ -85,23 +113,12 @@ void doGatherShapeN (const amrex::Real xp,
         }
     }
 
-    constexpr int derivative_type = 1;
-
-    HIPACE_LOOP_UNROLL
-    for (int iy=0; iy<=depos_order_xy+derivative_type; iy++){
-        HIPACE_LOOP_UNROLL
-        for (int ix=0; ix<=depos_order_xy+derivative_type; ix++){
-
-            // Compute shape factors
-            auto [shape_y, shape_dy, j] =
-                derivative_shape_factor<derivative_type, depos_order_xy>(y, iy);
-            auto [shape_x, shape_dx, i] =
-                derivative_shape_factor<derivative_type, depos_order_xy>(x, ix);
-
-            const amrex::Real psip = slice_arr(i, j, psi_comp);
-            ExmByp += (shape_dx * shape_y) * psip * dx_inv;
-            EypBxp += (shape_x * shape_dy) * psip * dy_inv;
-        }
+    if (derivative_type == 0) {
+        doPsiGatherShapeN<depos_order_xy, 0>(x, y, ExmByp, EypBxp, slice_arr, psi_comp,
+                                             dx_inv, dy_inv);
+    } else {
+        doPsiGatherShapeN<depos_order_xy, 1>(x, y, ExmByp, EypBxp, slice_arr, psi_comp,
+                                             dx_inv, dy_inv);
     }
 }
 

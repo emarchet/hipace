@@ -167,11 +167,34 @@ Hipace::ReadParameters ()
 
     std::string solver = "explicit";
     queryWithParser(pph, "bxby_solver", solver);
+
+    queryWithParser(pph, "energy_preserving_start_slice", m_ep_start_slice);
+    queryWithParser(pph, "solve_BxBy", m_solve_BxBy_input);
+    queryWithParser(pph, "solve_Bz", m_solve_Bz_input);
+    queryWithParser(pph, "gather_derivative_type", m_gather_derivative_type_input);
+    queryWithParser(pph, "plasma_divj_deposition", m_plasma_divj_deposition_input);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_gather_derivative_type_input >= 0 && m_gather_derivative_type_input <= 1,
+        "hipace.gather_derivative_type must be 0 (analytic) or 1 (nodal)");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_depos_order_xy != 0 ||
+        (m_gather_derivative_type_input != 0 && !m_plasma_divj_deposition_input),
+        "Analytic derivative (gather_derivative_type=0 or plasma_divj_deposition=1) "
+        "with depos_order_xy=0 would vanish");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        !m_plasma_divj_deposition_input || m_depos_order_z != 2,
+        "hipace.plasma_divj_deposition is not implemented for depos_order_z = 2");
+
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
         solver == "predictor-corrector" ||
         solver == "explicit",
         "hipace.bxby_solver must be explicit or predictor-corrector");
     m_explicit = solver == "explicit" ? true : false;
+
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_explicit ||
+        (m_solve_BxBy_input && m_solve_Bz_input && !m_plasma_divj_deposition_input),
+        "solve_BxBy=0, solve_Bz=0 and plasma_divj_deposition=1 require the explicit solver");
+
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_explicit || !m_multi_beam.AnySpeciesSalame(),
         "Cannot use SALAME algorithm with predictor-corrector solver");
     queryWithParser(pph, "MG_tolerance_rel", m_MG_tolerance_rel);
@@ -693,6 +716,8 @@ Hipace::SolveOneSlice (int islice, int step, bool is_first_step, bool is_last_st
 {
     HIPACE_PROFILE("Hipace::SolveOneSlice()");
 
+    UpdateSliceSwitches(islice);
+
     int current_N_level = 1;
 
     for (int lev=1; lev<m_N_level; ++lev) {
@@ -798,14 +823,20 @@ Hipace::SolveOneSlice (int islice, int step, bool is_first_step, bool is_last_st
             m_multi_beam.DepositCurrentSlice(m_fields, m_3D_geom, lev, is_first_step,
                 m_do_beam_jx_jy_deposition, false, false, WhichSlice::Next, WhichBeamSlice::Next);
 
-            // Set Sx and Sy to beam contribution
-            InitializeSxSyWithBeam(lev);
+            if (m_solve_BxBy) {
+                // Set Sx and Sy to beam contribution
+                InitializeSxSyWithBeam(lev);
 
-            // Deposit Sx and Sy for every plasma species
-            m_multi_plasma.ExplicitDeposition(m_fields, m_3D_geom, lev);
+                // Deposit Sx and Sy for every plasma species
+                m_multi_plasma.ExplicitDeposition(m_fields, m_3D_geom, lev);
 
-            // Solves Bx, By using Sx, Sy and chi
-            ExplicitMGSolveBxBy(lev, WhichSlice::This);
+                // Solves Bx, By using Sx, Sy and chi
+                ExplicitMGSolveBxBy(lev, WhichSlice::This);
+            } else {
+                // Bx, By are not reset per slice in the explicit solver: zero them explicitly
+                m_fields.setVal(0., lev, WhichSlice::This, "Bx", "By");
+            }
+            
         }
     } else {
         // Solves Bx and By in the current slice and modifies the force terms of the plasma particles
@@ -937,6 +968,19 @@ Hipace::ResetAllQuantities ()
             m_fields.getSlices(lev).setVal(0.);
         }
     }
+}
+
+void
+Hipace::UpdateSliceSwitches (int islice)
+{
+    // only Bx, By depend on the slice: solve_BxBy applies from m_ep_start_slice
+    // onwards, before that (closer to the head) Bx, By are always solved
+    m_solve_BxBy             = islice <= m_ep_start_slice ? m_solve_BxBy_input : true;
+
+    // everything else applies to the whole box
+    m_solve_Bz               = m_solve_Bz_input;
+    m_gather_derivative_type = m_gather_derivative_type_input;
+    m_plasma_divj_deposition = m_plasma_divj_deposition_input;
 }
 
 void

@@ -63,6 +63,9 @@ AdvancePlasmaParticles (PlasmaParticleContainer& plasma, const Fields & fields,
 
         const bool can_ionize = plasma.m_can_ionize;
         const int n_subcycles = plasma.m_n_subcycles;
+
+        const int gather_derivative_type = Hipace::m_gather_derivative_type;
+
         [[maybe_unused]] const int ab5_permutation = plasma.m_ab5_permutation;
 
         const auto enforceBC = EnforceBC();
@@ -117,7 +120,8 @@ AdvancePlasmaParticles (PlasmaParticleContainer& plasma, const Fields & fields,
 
                         doGatherShapeN<depos_order.value>(xp, yp, ExmByp, EypBxp, Ezp, Bxp, Byp,
                                 Bzp, slice_arr, psi_comp, ez_comp, bx_comp, by_comp,
-                                bz_comp, dx_inv, dy_inv, x_pos_offset, y_pos_offset);
+                                bz_comp, dx_inv, dy_inv, x_pos_offset, y_pos_offset,
+                                gather_derivative_type);
 
                         if (use_laser.value) {
                             doLaserGatherShapeN<depos_order.value>(xp, yp,
@@ -279,7 +283,7 @@ AdvancePlasmaParticles (PlasmaParticleContainer& plasma, const Fields & fields,
 
             const PhysConst phys_const_SI = make_constants_SI();
 
-            amrex::Real u_std = std::sqrt(Hipace::m_boundary_temperature * phys_const_SI.q_e /
+            amrex::Real u_std = std::sqrt(plasma.m_boundary_temperature * phys_const_SI.q_e /
                                 (plasma.m_mass * (phys_const_SI.m_e / phys_const.m_e) *
                                 (phys_const_SI.c * phys_const_SI.c) ) );
 

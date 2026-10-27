@@ -64,6 +64,11 @@ DepositCurrent (PlasmaParticleContainer& plasma, Fields & fields,
         const int    chi = deposit_chi    ? Comps[which_slice]["chi"]    : -1;
         const int rhomjz = deposit_rhomjz ? Comps[which_slice]["rhomjz"] : -1;
         const int      n = deposit_n      ? Comps[which_slice][n_str]    : -1;
+
+        const int   divj = (Hipace::m_plasma_divj_deposition && deposit_jx_jy &&
+            which_slice == WhichSlice::This)
+            ? Comps[which_slice]["divj_plasma"] : -1;
+
         const int   aabs = Hipace::m_use_laser ? Comps[WhichSlice::This]["aabs"] : -1;
 
         // Offset for converting positions to indexes
@@ -125,13 +130,13 @@ DepositCurrent (PlasmaParticleContainer& plasma, Fields & fields,
                         int(pti.numParticles()), is_valid, get_cell, deposit, isl_fab.array(),
                         isl_fab.box(), pti.GetParticleTile().getParticleTileData(),
                         amrex::GpuArray<int, 1>{aabs},
-                        amrex::GpuArray<int, 7>{jx, jy, jz, rho, chi, rhomjz, n});
+                        amrex::GpuArray<int, 8>{jx, jy, jz, rho, chi, rhomjz, n, divj});
                 } else {
                     SharedMemoryDeposition<stencil_size, stencil_size, true>(
                         int(pti.numParticles()), is_valid, get_cell, deposit, isl_fab.array(),
                         isl_fab.box(), pti.GetParticleTile().getParticleTileData(),
                         amrex::GpuArray<int, 0>{},
-                        amrex::GpuArray<int, 7>{jx, jy, jz, rho, chi, rhomjz, n});
+                        amrex::GpuArray<int, 8>{jx, jy, jz, rho, chi, rhomjz, n, divj});
                 }
             },
             // is_valid
@@ -258,6 +263,14 @@ DepositCurrent (PlasmaParticleContainer& plasma, Fields & fields,
                         }
                         if (depos_idx[6] != -1) { // deposit_n
                             amrex::Gpu::Atomic::Add(arr.ptr(i, j, depos_idx[6]), wn);
+                        }
+                        if (depos_idx[7] != -1) { // deposit_divj (energy-preserving Ez source)
+                            // analytic derivative of the shape factor; same cells as shape_factor
+                            auto [sx, dsx, i2] = derivative_shape_factor<0, depos_order>(xmid, ix);
+                            auto [sy, dsy, j2] = derivative_shape_factor<0, depos_order>(ymid, iy);
+                            const amrex::Real wdivj = q_invvol * clight *
+                                (vx * dsx * sy * dx_inv + vy * sx * dsy * dy_inv);
+                            amrex::Gpu::Atomic::Add(arr.ptr(i, j, depos_idx[7]), wdivj);
                         }
                     }
                 }

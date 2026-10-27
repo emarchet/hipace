@@ -239,6 +239,8 @@ AdvanceBeamParticlesSlice (
     // don't include slipped particles in count as they were already pushed
     Hipace::m_num_beam_particles_pushed += double(beam.getNumParticles(WhichBeamSlice::This));
 
+    const int gather_derivative_type = Hipace::m_gather_derivative_type;
+
     // Use OMP ParallelFor to use multiple threads when running on CPU
     omp::ParallelFor(
         amrex::TypeList<
@@ -305,7 +307,8 @@ AdvanceBeamParticlesSlice (
                 // field gather for a single particle
                 doGatherShapeN<depos_order.value>(xp, yp, ExmByp, EypBxp, Ezp, Bxp, Byp, Bzp,
                     slice_arr, psi_comp, ez_comp, bx_comp, by_comp, bz_comp,
-                    dx_inv, dy_inv, x_pos_offset, y_pos_offset);
+                    dx_inv, dy_inv, x_pos_offset, y_pos_offset,
+                    gather_derivative_type);
 
                 if (c_do_ez_inzerp.value) {
                     // Update Ez
