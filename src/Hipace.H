@@ -31,6 +31,7 @@
 #endif
 
 #include <memory>
+#include <limits>
 
 namespace hpmg { class MultiGrid; }
 
@@ -124,6 +125,13 @@ public:
      * \param[in] lev MR level
      */
     void InitializeSxSyWithBeam (const int lev);
+
+    /** \brief Set the slice-dependent switches for slice islice: solve_BxBy applies for
+     * islice <= m_start_slice (Bx, By solved before that), all other inputs apply everywhere
+     *
+     * \param[in] islice current slice index
+     */
+    void UpdateSliceSwitch (int islice);
 
     /**
      * \brief Knowing the sources Sx, Sy and chi, apply MG to solve for Bx, By
@@ -276,6 +284,19 @@ public:
     inline static bool m_do_shared_depos = false;
     /** Whether the explicit field solver is used */
     inline static bool m_explicit = true;
+    /** First slice from which hipace.solve_BxBy applies. Slices go from head (bigEnd) to
+     * tail (0), so it applies on islice <= m_start_slice. Default: all slices */
+    inline static int  m_start_slice = std::numeric_limits<int>::max();
+    /** hipace.solve_BxBy as given in the input file, applied from m_start_slice onwards */
+    inline static bool m_solve_BxBy_input = true;
+    /** Whether Bx, By are solved on the current slice, set by UpdateSliceSwitch */
+    inline static bool m_solve_BxBy = true;
+    /** Whether Bz is solved; if false, Bz is set to zero */
+    inline static bool m_solve_Bz = true;
+    /** Derivative used to gather ExmBy, EypBx from Psi: 0 analytic, 1 nodal */
+    inline static int  m_gather_derivative_type = 1;
+    /** Whether plasma particles deposit div(j) analytically into divj_plasma for the Ez source */
+    inline static bool m_plasma_divj_deposition = false;
     /** Relative tolerance for the multigrid solver, when using the explicit solver */
     inline static amrex::Real m_MG_tolerance_rel = 1.e-4;
     /** Absolute tolerance for the multigrid solver, when using the explicit solver */

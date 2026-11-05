@@ -498,6 +498,7 @@ IonizationModule (const int lev,
 
         long num_ions = ptile_ion.numParticles();
 
+        const int gather_derivative_type = Hipace::m_gather_derivative_type;
 
         // This kernel supports multiple deposition orders (0, 1, 2, 3) at compile time
         // and calculates ionization probability. If ionization occurs, it increments
@@ -529,7 +530,8 @@ IonizationModule (const int lev,
             doGatherShapeN<depos_order_xy>(xp, yp,
                            ExmByp, EypBxp, Ezp, Bxp, Byp, Bzp, slice_arr,
                            psi_comp, ez_comp, bx_comp, by_comp, bz_comp,
-                           dx_inv, dy_inv, x_pos_offset, y_pos_offset);
+                           dx_inv, dy_inv, x_pos_offset, y_pos_offset,
+                           gather_derivative_type);
 
             const amrex::ParticleReal Exp = ExmByp + Byp * phys_const.c;
             const amrex::ParticleReal Eyp = EypBxp - Bxp * phys_const.c;
