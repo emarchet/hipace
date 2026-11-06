@@ -61,7 +61,7 @@ Collision::ReadParameters(
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(sizeof(amrex::Real) == sizeof(double),
         "electron_impact collisions require a double-precision build (HiPACE_PRECISION=DOUBLE)");
 
-    // Normalized units: Krel, vrel, inv_dV, masses all assume SI
+    // Normalized units: Krel, vlab, inv_dV, masses all assume SI
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!Hipace::m_normalized_units,
         "electron_impact collisions require SI units (hipace.normalized_units = 0)");
 
@@ -275,11 +275,11 @@ Collision::doElectronImpact (
             if ( diffm < std::numeric_limits<amrex::Real>::min() || diffm < 1.0e-10_rt * summ ) {
                 return CollisionOutcome{};
             }
-            // Compute the particles relative velocity (lab frame)
+            // Compute the particles relative velocity (lab frame)           
             const amrex::Real u1u2 = ux1*ux2+uy1*uy2+uz1*uz2;
             const amrex::Real grel = g1*g2-u1u2;
-            const amrex::Real inv_grel2 = 1/(grel*grel);
-            const amrex::Real vrel = PhysConstSI::c * std::sqrt(1-inv_grel2);
+            // = vrel*grel/(g1*g2)
+            const amrex::Real vlab = PhysConstSI::c * std::sqrt(amrex::max(grel*grel - 1._rt, 0._rt)) / (g1*g2);
 
             // Ionization energy of the current charge state (eV)
             const amrex::Real Eion_eV = p_ionization_energies[ion_lev2];
@@ -303,7 +303,7 @@ Collision::doElectronImpact (
             // The weights are rescaled according to eq (22)-(23),
             // Higginson et al., Journal of Computational Physics 413 (2020)
 
-            const auto Pion = -std::expm1(-vrel * N12 * amrex::max(w1r,w2r) * inv_dV * sigma * dt*dt_fac);
+            const auto Pion = -std::expm1(-vlab * N12 * amrex::max(w1r,w2r) * inv_dV * sigma * dt*dt_fac);
             auto r = amrex::Random(engine);
             if (Pion <= r) return CollisionOutcome{};
 
