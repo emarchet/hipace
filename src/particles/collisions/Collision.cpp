@@ -14,10 +14,10 @@
 
 using namespace amrex::literals;
 
-// Binding energies - reduced to H, N, He, Ar (eV)
+// Binding energies (eV)
 // Innermost shell first, progressing outward
 namespace {
-    constexpr amrex::Real bindingEnergies[28] = {
+    constexpr amrex::Real bindingEnergies[119] = {
         /* Z=1  (H)  - 1 electron  */   13.5981,
         /* Z=7  (N)  - 7 electrons */   403.78, 403.78,
                                         20.33, 20.33,
@@ -27,7 +27,30 @@ namespace {
                                         324.2, 324.2,
                                         247.74, 247.74, 247.74, 247.74, 247.74, 247.74,
                                         29.24, 29.24,
-                                        15.76, 15.76, 15.76, 15.76, 15.76, 15.76
+                                        15.76, 15.76, 15.76, 15.76, 15.76, 15.76,
+        /* Z=37 (Rb) - 37 electrons */  15201.7, 15201.7,
+                                        2068.07, 2068.07,
+                                        1827.16, 1827.16, 1827.16, 1827.16, 1827.16, 1827.16,
+                                        325.55, 325.55,
+                                        244.73, 244.73, 244.73, 244.73, 244.73, 244.73,
+                                        114.1, 114.1, 114.1, 114.1, 114.1,
+                                        114.1, 114.1, 114.1, 114.1, 114.1,
+                                        32.4, 32.4,
+                                        16.52, 16.52, 16.52, 16.52, 16.52, 16.52,
+                                        4.18,
+        /* Z=54 (Xe) - 54 electrons */  34561., 34561.,
+                                        5453., 5453.,
+                                        4893., 4893., 4893., 4893., 4893., 4893.,
+                                        1148.7, 1148.7,
+                                        961.1, 961.1, 961.1, 961.1, 961.1, 961.1,
+                                        681.4, 681.4, 681.4, 681.4, 681.4,
+                                        681.4, 681.4, 681.4, 681.4, 681.4,
+                                        213.2, 213.2,
+                                        145.9, 145.9, 145.9, 145.9, 145.9, 145.9,
+                                        68.3, 68.3, 68.3, 68.3, 68.3,
+                                        68.3, 68.3, 68.3, 68.3, 68.3,
+                                        23.3, 23.3,
+                                        12.13, 12.13, 12.13, 12.13, 12.13, 12.13
     };  // Structure specific to ImpactIonizationSigma.H
 
     // Result of the decision function (pass 1) for a single candidate pair.
@@ -48,11 +71,32 @@ namespace {
         bool make_new_particle = false;
         amrex::Real p3x = 0._rt, p3y = 0._rt, p3z = 0._rt;
     };
+
+    // Lorentz boost of a normalized momentum u = gamma*beta between the lab frame and the rest
+    // frame of a particle with lab momentum (uix, uiy, uiz) and Lorentz factor gi
+    // (general boost, Jackson, Classical Electrodynamics, Eq. 11.19):
+    //     u_out = u_in + u_i [ (g_i - 1) (u_in * u_i) / |u_i|^2 + s g_in ]
+    // s = -1: lab -> rest frame, s = +1: rest frame -> lab.
+    // (g_in, u_in) are the Lorentz factor and momentum in the frame the boost starts from.
+    AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    void boost_u (amrex::Real s, amrex::Real g_in,
+                  amrex::Real ux_in, amrex::Real uy_in, amrex::Real uz_in,
+                  amrex::Real uix, amrex::Real uiy, amrex::Real uiz, amrex::Real gi,
+                  amrex::Real& ux_out, amrex::Real& uy_out, amrex::Real& uz_out)
+    {
+        const amrex::Real ui2 = uix*uix + uiy*uiy + uiz*uiz;
+        const amrex::Real f = (ui2 > 0._rt) ?
+            (gi - 1._rt) * (uix*ux_in + uiy*uy_in + uiz*uz_in) / ui2 + s * g_in : 0._rt;
+        ux_out = ux_in + f * uix;
+        uy_out = uy_in + f * uiy;
+        uz_out = uz_in + f * uiz;
+    }
 }
 
 void
 Collision::ReadParameters(
     const MultiPlasma& multi_plasma,
+    const MultiBeam& multi_beam,
     std::string const collision_name)
 {
     amrex::ParmParse pp(collision_name);
@@ -68,9 +112,10 @@ Collision::ReadParameters(
     getWithParser(pp, "type", m_collision_type);
 
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_collision_type == "electron_impact",
-        "Unknown collision type"
+        m_collision_type == "electron_impact" || m_collision_type == "beam_impact",
+        "Unknown collision type: " + collision_name + ".type must be electron_impact or beam_impact"
     );
+    const bool beam_impact = m_collision_type == "beam_impact";
 
     // Ion-impact ionization might be added as a future step (same species colliding)
     // Electron-impact ionization:
@@ -82,19 +127,34 @@ Collision::ReadParameters(
     getWithParser(pp, "new_electron", m_new_electron_name);
 
     // All three species must exist, and the target must be a separate species
+    // electron_impact: all three are plasma species
+    // beam_impact: the projectile is a beam species, target and new electron are plasma species
     const auto& plasma_names = multi_plasma.GetNames();
     for (const std::string& name : {m_projectile_name, m_target_name, m_new_electron_name}) {
+        if (beam_impact && name == m_projectile_name) continue;
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             std::find(plasma_names.begin(), plasma_names.end(), name) != plasma_names.end(),
             collision_name + ": species '" + name + "' is not listed in plasmas.names");
+    }
+    if (beam_impact) {
+        bool found = false;
+        for (int i = 0; i < multi_beam.get_nbeams(); ++i) {
+            if (multi_beam.get_name(i) == m_projectile_name) found = true;
+        }
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(found,
+            collision_name + ": projectile '" + m_projectile_name + "' is not listed in beams.names");
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            multi_beam.getBeam(m_projectile_name).GetCharge() != 0._rt,
+            collision_name + ": the projectile beam must be charged");
     }
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
         m_target_name != m_projectile_name && m_target_name != m_new_electron_name,
         collision_name + ": the target must be a different species from the electrons");
 
-    // The cross section and the final-state model assume that the projectile
-    // and the new particle are electrons (checked once here, not in the kernels)
+    // The cross section and the final-state model assume that the new particle is an electron,
+    // and for electron_impact also the projectile (checked once here, not in the kernels)
     for (const std::string& name : {m_projectile_name, m_new_electron_name}) {
+        if (beam_impact && name == m_projectile_name) continue;
         const PlasmaParticleContainer& species = multi_plasma.GetPlasma(name);
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             std::abs(species.GetMass() - PhysConstSI::m_e) < 1.e-6_rt * PhysConstSI::m_e &&
@@ -122,12 +182,19 @@ Collision::ReadParameters(
     // Initialize binding and ionization energies used by the
     // electron-impact ionization cross-section model
     // Both buffers only hold the Z entries of the target element.
-    if (m_collision_type == "electron_impact") {
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-            Z == 1 || Z == 18,
-            "The current implementation of electron-impact ionization only supports Hydrogen and Argon. "
-            "Please check the input file and the physical element specified for target."
-        );
+    if (m_collision_type == "electron_impact" || m_collision_type == "beam_impact") {
+        if (beam_impact) {
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                Z == 18 || Z == 37 || Z==54,
+                "beam_impact is available for Argon, Rubidium and Xenon (Krypton parameters). "
+            );
+        } else {
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                Z == 1 || Z == 18 || Z == 54,
+                "The current implementation of electron-impact ionization supports Hydrogen, Argon and Xenon. "
+                "Please check the input file and the physical element specified for target."
+            );
+        }
 
         // Ionization energies from the NIST table, indexed by charge state (zstar = 0..Z-1)
         const int ion_offset = ion_energy_offsets[ion_element_id];
@@ -148,14 +215,18 @@ Collision::ReadParameters(
 void
 Collision::doCollision (
         int lev, const amrex::Geometry& geom,
-        MultiPlasma& multi_plasma)
+        MultiPlasma& multi_plasma,
+        MultiBeam& multi_beam)
 {
     HIPACE_PROFILE("Collision::doCollision()");
 
     if (m_collision_type == "electron_impact") {
         doElectronImpact(lev, geom, multi_plasma);
+    } else if (m_collision_type == "beam_impact") {
+        doBeamImpact(lev, geom, multi_plasma, multi_beam);
     }
 }
+
 // SI units are required
 // Different species colliding (electron impact)
 void
@@ -218,11 +289,8 @@ Collision::doElectronImpact (
             const amrex::Real w2 = ptd2.rdata(PlasmaIdx::w)[i2];
             int ion_lev2 = ptd2.idata(PlasmaIdx::ion_lev)[i2];
 
-            // Fully ionized, do not collide
-            if (ion_lev2 >= ion_atomic_number) {
-                return CollisionOutcome{};
-            }
-            if (ion_atomic_number == 18 && ion_lev2 >= 3) {   // Ionization arbitrarily stops at Ar 3+
+            // Fully ionized, or at the (arbitrary) limit of 3+: do not collide
+            if (ion_lev2 >= amrex::min(ion_atomic_number, 3)) {
                 return CollisionOutcome{};
             }
 
@@ -362,6 +430,205 @@ Collision::doElectronImpact (
             // function above) -- including both independent rejection draws. This function
             // does no further random sampling; it only writes the already-computed
             // final-state momenta into the newly-allocated secondary electron.
+            amrex::Real ux3 = inv_c * p3x / m3;
+            amrex::Real uy3 = inv_c * p3y / m3;
+            amrex::Real uz3 = inv_c * p3z / m3;
+
+            ptd3.id(i3) = 4;
+            ptd3.cpu(i3) = ptd2.cpu(i2);
+            ptd3.rdata(PlasmaIdx::x)[i3] = ptd2.rdata(PlasmaIdx::x)[i2];
+            ptd3.rdata(PlasmaIdx::y)[i3] = ptd2.rdata(PlasmaIdx::y)[i2];
+            ptd3.rdata(PlasmaIdx::x_prev)[i3] = ptd2.rdata(PlasmaIdx::x_prev)[i2];
+            ptd3.rdata(PlasmaIdx::y_prev)[i3] = ptd2.rdata(PlasmaIdx::y_prev)[i2];
+            ptd3.rdata(PlasmaIdx::w)[i3] = ptd2.rdata(PlasmaIdx::w)[i2];
+            ptd3.idata(PlasmaIdx::ion_lev)[i3] = 0;
+
+            ptd3.rdata(PlasmaIdx::ux)[i3] = ux3;
+            ptd3.rdata(PlasmaIdx::uy)[i3] = uy3;
+            ptd3.rdata(PlasmaIdx::psi)[i3] = plasma_psi(ux3, uy3, uz3, /* Assumes Aabssq == 0 */ 0._rt);
+            ptd3.rdata(PlasmaIdx::ux_half_step)[i3] = ux3;
+            ptd3.rdata(PlasmaIdx::uy_half_step)[i3] = uy3;
+            ptd3.rdata(PlasmaIdx::psi_half_step)[i3] = plasma_psi(ux3, uy3, uz3, /* Assumes Aabssq == 0 */ 0._rt);
+        });
+}
+
+// SI units are required
+// Beam projectile (read-only), plasma target (beam impact)
+void
+Collision::doBeamImpact (
+        int lev, const amrex::Geometry& geom,
+        MultiPlasma& multi_plasma,
+        MultiBeam& multi_beam)
+{
+    constexpr amrex::Real c = PhysConstSI::c;
+    constexpr amrex::Real inv_c = 1.0_rt / PhysConstSI::c;
+    // electron rest energy (eV)
+    constexpr amrex::Real me_c2_eV = PhysConstSI::m_e * PhysConstSI::c * PhysConstSI::c / PhysConstSI::q_e;
+
+    const amrex::Real * const p_binding_energies = m_binding_energies.data();
+    const amrex::Real * const p_ionization_energies = m_ionization_energies.data();
+
+    const auto& beam = multi_beam.getBeam(m_projectile_name);
+    auto& species2 = multi_plasma.GetPlasma(m_target_name);
+    auto& species3 = multi_plasma.GetPlasma(m_new_electron_name);
+
+    const amrex::Real m2 = species2.GetMass();
+    const amrex::Real m3 = species3.GetMass();
+
+    // In the Bethe regime the cross section scales with the projectile charge squared
+    const amrex::Real zp = beam.GetCharge() / PhysConstSI::q_e;
+    const amrex::Real zp2 = zp * zp;
+
+    // The maximum energy transfer, hence the cut-off of the spectrum, depends on the projectile mass
+    const amrex::Real me_over_M = PhysConstSI::m_e / beam.GetMass();
+
+    // Targets with gamma/psi above this factor violate the quasi-static approximation:
+    // the current deposition removes them, so they must not be ionized either
+    const amrex::Real max_qsa2 = species2.m_max_qsa_weighting_factor;
+
+    const int ion_atomic_number = m_atomic_number;
+
+    const amrex::Real inv_dV = geom.InvCellSize(0)*geom.InvCellSize(1)*geom.InvCellSize(2);
+    const amrex::Real dz = geom.CellSize(2);
+
+    pairAndIonizeBeam(lev, geom, multi_plasma, multi_beam,
+        [=] AMREX_GPU_DEVICE (auto ptd1, int i1, auto ptd2, int i2,
+                              int N1, int N2, int icoll,
+                              amrex::RandomEngine const& engine) -> CollisionOutcome
+        {
+            // Decide whether this beam-target pair ionizes the target. The beam is read-only.
+            //
+            // Exposure: the target crosses the current beam slice in dz/(c - v_z) = dz/c * gamma/psi.
+            // The beam's own exposure (one beam time step) is much longer, so a single Perez event
+            // cannot serve both partners; only the target side is sampled here.
+            // Probability: Perez et al. (2012), Sec. IV C, two steps: an event with the larger
+            // rescaled weight, then the target accepts it with probability w1r/max(w1r,w2r).
+            // The beam's acceptance draw is skipped because the beam is not updated.
+
+            // Beam particle (u = gamma*beta, real u_z)
+            if (!ptd1.id(i1).is_valid()) return CollisionOutcome{};
+            const amrex::Real ux1 = ptd1.rdata(BeamIdx::ux)[i1];
+            const amrex::Real uy1 = ptd1.rdata(BeamIdx::uy)[i1];
+            const amrex::Real uz1 = ptd1.rdata(BeamIdx::uz)[i1];
+            const amrex::Real w1  = ptd1.rdata(BeamIdx::w)[i1];
+            const amrex::Real g1  = std::sqrt(1._rt + ux1*ux1 + uy1*uy1 + uz1*uz1);
+
+            // Target
+            const amrex::Real ux2 = ptd2.rdata(PlasmaIdx::ux_half_step)[i2];
+            const amrex::Real uy2 = ptd2.rdata(PlasmaIdx::uy_half_step)[i2];
+            const amrex::Real psi2 = ptd2.rdata(PlasmaIdx::psi_half_step)[i2];
+            const amrex::Real w2 = ptd2.rdata(PlasmaIdx::w)[i2];
+            const int ion_lev2 = ptd2.idata(PlasmaIdx::ion_lev)[i2];
+
+            // Fully ionized, or already 2+: do not collide.
+            // The Rudd model is only trusted up to the 1+ -> 2+ step.
+            if (ion_lev2 >= amrex::min(ion_atomic_number, 2)) {
+                return CollisionOutcome{};
+            }
+
+            if (psi2 <= 0._rt) return CollisionOutcome{};
+            const amrex::Real g2 = plasma_gamma(ux2, uy2, psi2, 1._rt / psi2, /* Assumes Aabssq == 0 */ 0._rt);
+            if (g2/psi2 > max_qsa2) return CollisionOutcome{};
+            const amrex::Real uz2 = plasma_uz(g2, psi2);
+
+            // Rescaling of the particle weights according to eq (22)-(23),
+            // Higginson et al., Journal of Computational Physics 413 (2020)
+            const int N12 = amrex::max(N1,N2);
+            int D1;
+            int D2;
+            if (N1>=N2) {
+                D1 = 1;
+            } else {
+                D1 = (N2/N1) + (icoll < (N2 % N1) ? 1 : 0);
+            }
+            if (N2>=N1) {
+                D2 = 1;
+            } else {
+                D2 = (N1/N2) + (icoll < (N1 % N2) ? 1 : 0);
+            }
+            const amrex::Real w1r = w1 / amrex::max(D1,D2);
+            const amrex::Real w2r = w2 / amrex::max(D1,D2);
+            const amrex::Real wmax = amrex::max(w1r,w2r);
+
+            // Lorentz factor of the beam particle in the target rest frame (invariant)
+            const amrex::Real gs = g1*g2 - (ux1*ux2 + uy1*uy2 + uz1*uz2);
+            if (gs <= 1._rt) return CollisionOutcome{};
+
+            // Relativistic Rudd cross section and mean ejected energy (target rest frame)
+            amrex::Real sigma, W_eV;
+            coll_ion::rudd_sigma(ion_atomic_number, ion_lev2, gs, me_over_M,
+                                 p_binding_energies, p_ionization_energies, sigma, W_eV);
+            sigma *= zp2;
+            if (sigma <= 0._rt) return CollisionOutcome{};
+
+            // Moller relative velocity, for lab-frame densities and time
+            const amrex::Real vM = c * std::sqrt(gs*gs - 1._rt) / (g1*g2);
+
+            // Time the beam slice needs to pass the target: dz / (v_beam,z - v_target,z)
+            //const amrex::Real dvz = c * (uz1 / g1 - uz2 / g2);   // v_beam,z - v_target,z
+            //if (dvz <= 0._rt) return CollisionOutcome{};
+            //const amrex::Real dt_target = dz / dvz;
+
+            // Time the target spends in the current slice, which moves at c
+            const amrex::Real dt_target = dz * inv_c * g2 / psi2;
+
+            // Perez step 1: event with the larger rescaled weight
+            const amrex::Real Pev = -std::expm1(-N12 * wmax * inv_dV * sigma * vM * dt_target);
+            if (amrex::Random(engine) >= Pev) return CollisionOutcome{};
+            // Perez step 2 (rejection): the target accepts with probability w1r/wmax
+            if (amrex::Random(engine) * wmax >= w1r) return CollisionOutcome{};
+
+            // Projectile direction in the ion rest frame
+            amrex::Real ubx, uby, ubz;
+            boost_u(-1._rt, g1, ux1, uy1, uz1, ux2, uy2, uz2, g2, ubx, uby, ubz);
+            const amrex::Real ubm = std::sqrt(ubx*ubx + uby*uby + ubz*ubz);
+            if (ubm <= 0._rt) return CollisionOutcome{};
+
+            // Ejected electron, in the ion rest frame, moving along the projectile (as in Smilei).
+            // Kinetic energy in units of the electron rest energy, W / (m_e c^2)
+            const amrex::Real W_over_mc2 = W_eV / me_c2_eV;
+            // Lorentz factor: total energy = rest energy + kinetic energy
+            const amrex::Real gw = 1._rt + W_over_mc2;
+            // |u| = sqrt(gamma^2 - 1), expanded so that no 1 - 1 cancellation occurs
+            const amrex::Real uw = std::sqrt(W_over_mc2 * (W_over_mc2 + 2._rt));
+            const amrex::Real uwx = uw * ubx / ubm;
+            const amrex::Real uwy = uw * uby / ubm;
+            const amrex::Real uwz = uw * ubz / ubm;
+
+            // Ion recoil in its rest frame: the beam is unchanged, so p_ion = -p_w
+            const amrex::Real mr = m3 / m2;
+            const amrex::Real urx = -mr * uwx;
+            const amrex::Real ury = -mr * uwy;
+            const amrex::Real urz = -mr * uwz;
+            const amrex::Real gr = std::sqrt(1._rt + urx*urx + ury*ury + urz*urz);
+
+            // Both back to the lab frame
+            amrex::Real u3x, u3y, u3z;
+            boost_u(+1._rt, gw, uwx, uwy, uwz, ux2, uy2, uz2, g2, u3x, u3y, u3z);
+            amrex::Real u2xn, u2yn, u2zn;
+            boost_u(+1._rt, gr, urx, ury, urz, ux2, uy2, uz2, g2, u2xn, u2yn, u2zn);
+
+            // Update the target: momentum and charge state. The next pair in this thread
+            // that hits the same target reads the new charge state.
+            ptd2.rdata(PlasmaIdx::ux_half_step)[i2]  = u2xn;
+            ptd2.rdata(PlasmaIdx::uy_half_step)[i2]  = u2yn;
+            ptd2.rdata(PlasmaIdx::psi_half_step)[i2] =
+                plasma_psi(u2xn, u2yn, u2zn, /* Assumes Aabssq == 0 */ 0._rt);
+            ptd2.idata(PlasmaIdx::ion_lev)[i2] = ion_lev2 + 1;
+
+            // The new electron is created in pass 2 with this momentum (SI)
+            CollisionOutcome outcome;
+            outcome.make_new_particle = true;
+            outcome.p3x = m3 * c * u3x;
+            outcome.p3y = m3 * c * u3y;
+            outcome.p3z = m3 * c * u3z;
+            return outcome;
+        },
+        [=] AMREX_GPU_DEVICE (auto ptd2, int i2, auto ptd3, int i3,
+                            amrex::Real p3x, amrex::Real p3y, amrex::Real p3z)
+        {
+            // Ionization function (pass 2): write the momentum computed in pass 1 into the
+            // newly allocated electron, at the position and with the weight of the ion.
             amrex::Real ux3 = inv_c * p3x / m3;
             amrex::Real uy3 = inv_c * p3y / m3;
             amrex::Real uz3 = inv_c * p3z / m3;
@@ -553,6 +820,227 @@ Collision::pairAndIonize (
 
         // get new ptd after resize in case species3 is the same as species1
         ptd1 = ptile1.getParticleTileData();
+        ptd2 = ptile2.getParticleTileData();
+        auto ptd3 = ptile3.getParticleTileData();
+
+        amrex::ParallelFor(total_ind_pairs,
+            [=] AMREX_GPU_DEVICE (int ipair){
+                const int icell = amrex::bisect(p_num_ind_pairs, 0, num_cells, ipair);
+
+                const int offset1_start = offset1[icell];
+                const int offset1_stop = offset1[icell+1];
+                const int offset2_start = offset2[icell];
+                const int offset2_stop = offset2[icell+1];
+
+                const int icoll = ipair - p_num_ind_pairs[icell];
+
+                const int N1 = offset1_stop - offset1_start;
+                const int N2 = offset2_stop - offset2_start;
+
+                int idx1 = icoll;
+                int idx2 = icoll;
+                while (idx1 < N1 && idx2 < N2) {
+                    const int j1 = perm1[offset1_start + idx1];
+                    const int j2 = perm2[offset2_start + idx2];
+                    const int new_part_idx = N2 < N1 ? p_flag1[j1] : p_flag2[j2];
+
+                    if (new_part_idx >= 0) {
+                        amrex::Real p3x, p3y, p3z;
+                        if (N2 < N1) {
+                            p3x = p_p3_1[3*j1+0]; p3y = p_p3_1[3*j1+1]; p3z = p_p3_1[3*j1+2];
+                        } else {
+                            p3x = p_p3_2[3*j2+0]; p3y = p_p3_2[3*j2+1]; p3z = p_p3_2[3*j2+2];
+                        }
+                        ionization_function(
+                            ptd2, j2, ptd3, old_size3 + new_part_idx,
+                            p3x, p3y, p3z
+                        );
+                    }
+
+                    if (N2 < N1) {
+                        idx1 += N2;
+                    } else {
+                        idx2 += N1;
+                    }
+                }
+            }
+        );
+
+        amrex::Gpu::streamSynchronize();
+    }
+}
+
+template <class F, class G>
+void
+Collision::pairAndIonizeBeam (
+        int,
+        const amrex::Geometry& geom,
+        MultiPlasma& multi_plasma,
+        MultiBeam& multi_beam,
+        F const& collision_function,
+        G const& ionization_function)
+{
+    // Same pairing as pairAndIonize. Species 1 is the current slice of a beam (read-only),
+    // species 2 the plasma target.
+    auto& beam = multi_beam.getBeam(m_projectile_name);
+    auto& species2 = multi_plasma.GetPlasma(m_target_name);
+
+    for (PlasmaParticleIterator pti(species2); pti.isValid(); ++pti) {
+        amrex::removeInvalidParticles(species2.ParticlesAt(0, pti));
+    }
+
+    if (beam.getNumParticles(WhichBeamSlice::This) == 0) { return; }
+
+    BeamBins bins1 = findBeamParticlesInEachTile(geom.Domain(), 1, beam, geom);
+    PlasmaBins bins2 = findParticlesInEachTile(geom.Domain(), 1, species2, geom);
+    if (bins1.numItems() == 0 || bins2.numItems() == 0) { return; }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(bins1.numBins() == bins2.numBins(),
+        "beam_impact: the beam and the target were binned into a different number of cells");
+
+    // offset: start/end positions of particles for each cell
+    // perm: permutation array mapping cell entries to particle indices
+    auto offset1 = bins1.offsetsPtr();
+    auto offset2 = bins2.offsetsPtr();
+    auto perm1 = bins1.permutationPtr();
+    auto perm2 = bins2.permutationPtr();
+
+    const int num_cells = bins1.numBins();
+
+    amrex::Gpu::DeviceVector<int> num_ind_pairs(num_cells, 0);
+    auto p_num_ind_pairs = num_ind_pairs.dataPtr();
+
+    const int total_ind_pairs = amrex::Scan::PrefixSum<int>(num_cells,
+        [=] AMREX_GPU_DEVICE (int i) {
+            int N1 = offset1[i+1] - offset1[i];
+            int N2 = offset2[i+1] - offset2[i];
+            return std::min(N1, N2);
+        },
+        [=] AMREX_GPU_DEVICE (int i, int s) {
+            p_num_ind_pairs[i] = s;
+        },
+        amrex::Scan::Type::exclusive, amrex::Scan::retSum
+    );
+
+    amrex::ParallelForRNG(num_cells,
+        [=] AMREX_GPU_DEVICE (int i, amrex::RandomEngine const& engine) {
+            ShuffleFisherYates(perm1, offset1[i], offset1[i+1], engine);
+            ShuffleFisherYates(perm2, offset2[i], offset2[i+1], engine);
+        }
+    );
+
+    auto& ptile1 = beam.getBeamSlice(WhichBeamSlice::This);
+    auto ptd1 = ptile1.getParticleTileData();
+    const int np1 = beam.getNumParticles(WhichBeamSlice::This);
+
+    // loop over tiles of the target
+    for (PlasmaParticleIterator pti(species2); pti.isValid(); ++pti) {
+
+        auto& ptile2 = species2.ParticlesAt(0, pti);
+        auto ptd2 = ptile2.getParticleTileData();
+        const int np2 = ptile2.numParticles();
+
+        amrex::Gpu::DeviceVector<int> flag1;
+        amrex::Gpu::DeviceVector<int> flag2;
+
+        // Scratch storage carrying the already-computed secondary-electron momenta
+        // (from CollisionOutcome) from pass 1 to pass 2, indexed by particle index:
+        // j1 if N2 < N1, else j2, i.e. the particle of the pair that belongs to the more
+        // numerous species in its cell. That particle is in exactly one pair per call
+        // (the particle of the less numerous species may be in several), so no two
+        // pairs ever write to the same slot.
+        amrex::Gpu::DeviceVector<amrex::Real> p3_scratch1;
+        amrex::Gpu::DeviceVector<amrex::Real> p3_scratch2;
+
+        flag1.resize(np1, 0);
+        flag2.resize(np2, 0);
+        p3_scratch1.resize(3*np1);  // re-size for xyz directions in space
+        p3_scratch2.resize(3*np2);
+
+        auto p_flag1 = flag1.dataPtr();
+        auto p_flag2 = flag2.dataPtr();
+        auto p_p3_1 = p3_scratch1.dataPtr();
+        auto p_p3_2 = p3_scratch2.dataPtr();
+
+        // loop over independent pairs
+        amrex::ParallelForRNG(total_ind_pairs,
+            [=] AMREX_GPU_DEVICE (int ipair, amrex::RandomEngine const& engine){
+                const int icell = amrex::bisect(p_num_ind_pairs, 0, num_cells, ipair);
+
+                const int offset1_start = offset1[icell];
+                const int offset1_stop = offset1[icell+1];
+                const int offset2_start = offset2[icell];
+                const int offset2_stop = offset2[icell+1];
+
+                const int icoll = ipair - p_num_ind_pairs[icell];
+
+                const int N1 = offset1_stop - offset1_start;
+                const int N2 = offset2_stop - offset2_start;
+
+                int idx1 = icoll;
+                int idx2 = icoll;
+                while (idx1 < N1 && idx2 < N2) {
+                    const int j1 = perm1[offset1_start + idx1];
+                    const int j2 = perm2[offset2_start + idx2];
+
+                    const auto outcome = collision_function(
+                        ptd1, j1, ptd2, j2,
+                        N1, N2, icoll,
+                        engine
+                    );
+
+                    if (N2 < N1) {
+                        idx1 += N2;
+                        if (outcome.make_new_particle) {
+                            p_flag1[j1] = 1;
+                            p_p3_1[3*j1+0] = outcome.p3x;
+                            p_p3_1[3*j1+1] = outcome.p3y;
+                            p_p3_1[3*j1+2] = outcome.p3z;
+                        }
+                    } else {
+                        idx2 += N1;
+                        if (outcome.make_new_particle) {
+                            p_flag2[j2] = 1;
+                            p_p3_2[3*j2+0] = outcome.p3x;
+                            p_p3_2[3*j2+1] = outcome.p3y;
+                            p_p3_2[3*j2+2] = outcome.p3z;
+                        }
+                    }
+                }
+            }
+        );
+
+        amrex::Gpu::streamSynchronize();
+
+        const int num_new_particles = amrex::Scan::PrefixSum<int>(np1+np2,
+            [=] AMREX_GPU_DEVICE (int i) {
+                if (i < np1) {
+                    return p_flag1[i];
+                } else {
+                    i -= np1;
+                    return p_flag2[i];
+                }
+            },
+            [=] AMREX_GPU_DEVICE (int i, int s) {
+                if (i < np1) {
+                    p_flag1[i] = p_flag1[i] == 0 ? -1 : s;
+                } else {
+                    i -= np1;
+                    p_flag2[i] = p_flag2[i] == 0 ? -1 : s;
+                }
+            },
+            amrex::Scan::Type::exclusive, amrex::Scan::retSum
+        );
+
+        if (num_new_particles == 0) {
+            continue;
+        }
+
+        auto& species3 = multi_plasma.GetPlasma(m_new_electron_name);
+        auto& ptile3 = species3.ParticlesAt(0, pti);
+        int old_size3 = ptile3.size();
+        ptile3.resize(old_size3 + num_new_particles);
+
+        // get new ptd after resize
         ptd2 = ptile2.getParticleTileData();
         auto ptd3 = ptile3.getParticleTileData();
 

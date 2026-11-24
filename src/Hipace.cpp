@@ -294,7 +294,7 @@ Hipace::ReadParameters ()
     queryWithParser(pph, "impact_ionization", m_impact_names);
     for (int i = 0; i != m_impact_names.size(); ++i) {
         m_all_impacts.emplace_back(Collision());
-        m_all_impacts.back().ReadParameters(m_multi_plasma, m_impact_names[i]);
+        m_all_impacts.back().ReadParameters(m_multi_plasma, m_multi_beam, m_impact_names[i]);
     }
 
     // external fields applied to the grid
@@ -899,7 +899,7 @@ Hipace::SolveOneSlice (int islice, int step, bool is_first_step, bool is_last_st
     doCoulombCollision(islice);
 
     for (auto& impact : m_all_impacts) {
-        impact.doCollision(0, m_slice_geom[0], m_multi_plasma);
+        impact.doCollision(0, m_slice_geom[0], m_multi_plasma, m_multi_beam);
     }
 
     // get minimum beam uz after push

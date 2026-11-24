@@ -14,6 +14,8 @@ int get_energy_index(int Z)
     if (Z == 7)  return 1;   // N  -  7 entries (indices 1-7)
     if (Z == 2)  return 8;   // He -  2 entries (indices 8-9)
     if (Z == 18) return 10;  // Ar - 18 entries (indices 10-27)
+    if (Z == 37) return 28;  // Rb - 37 entries (indices 28-64)
+    if (Z == 54) return 65;  // Xe - 54 entries (indices 65-118)
 
     return 0;
 }
@@ -247,6 +249,107 @@ namespace coll_ion
         }
         ionization_en = p_ionization_energies[base_idx + zstar];
         return {sigma, ionization_en};
+    }
+
+    /**
+     * @brief Ionization cross section and mean kinetic energy of the ejected electron for a fast
+     *        bare projectile (beam_impact), summed over all bound shells.
+     *
+     * Semiempirical model of Rudd et al., Rev. Mod. Phys. 64, 441 (1992), Eqs. (40)-(48), per shell
+     * with N electrons and binding energy I, in the target rest frame.
+     * Rudd's smooth cut-off is replaced by a sharp one at w_c, so that sigma and <W> are closed-form integrals;
+     * this is exact when w_c >> v/alpha, i.e. above about 10 MeV per nucleon.
+     * Same shell loop, binding-energy shift and degeneracy grouping as sigma_E.
+     * Parameters (Rudd Table V): the Kr set for the outer shells of rubidium (Rb+ has the electron
+     * configuration of Kr), and the inner-shell set for shells bound more than twice as tightly as
+     * the outermost.
+     *
+     * \param[in] atomic_number             Atomic number of the target element (37)
+     * \param[in] zstar                     Current ionization state
+     * \param[in] gamma                     Lorentz factor of the projectile in the target rest frame
+     * \param[in] me_over_M                 Electron mass over projectile mass
+     * \param[in] p_binding_energies        Pointer to table of binding energies
+     * \param[in] p_ionization_energies     Pointer to table of ionization energies
+     * \param[out] sigma                    Cross section for unit projectile charge (m^2)
+     * \param[out] w_mean                   Mean kinetic energy of the ejected electron (eV)
+     */
+    AMREX_GPU_HOST_DEVICE inline
+    void rudd_sigma (int atomic_number, int zstar, Real gamma, Real me_over_M,
+                     const Real* p_binding_energies, const Real* p_ionization_energies,
+                     Real& sigma, Real& w_mean)
+    {
+        // Rudd et al. (1992), Table V: A1, B1, C1, D1, E1, A2, B2, C2, D2
+        constexpr Real par_ar[9] = {1.20, 8.0, 0.86,  0.00, 0.80, 0.90,  2.7, 0.75,  0.80};
+        constexpr Real par_kr[9] = {1.46, 5.7, 0.65, -0.55, 1.00, 1.30, 22.0, 0.95, -1.00};
+        constexpr Real par_in[9] = {1.25, 0.5, 1.00,  1.00, 3.00, 1.10,  1.3, 1.00,  0.00};
+        const Real me_c2 = 510998.95_rt;        // electron rest energy [eV]
+        const Real rydberg = 13.605693122994_rt; // [eV]
+
+        sigma = 0.0_rt;
+        w_mean = 0.0_rt;
+        const Real beta2 = 1.0_rt - 1.0_rt / (gamma * gamma);
+        if (beta2 <= 0.0_rt) return;
+
+        // Maximum energy transfer to a free electron at rest (eV)
+        const Real w_max = 2.0_rt * me_c2 * beta2 * gamma * gamma /
+            (1.0_rt + 2.0_rt * gamma * me_over_M + me_over_M * me_over_M);
+
+        const Real shift = p_ionization_energies[zstar] - p_binding_energies[atomic_number - zstar - 1];
+
+        Real moment = 0.0_rt;   // sum_k sigma_k <W>_k
+        int n = 0;              // degeneracy counter
+        for (int k = 0; k < atomic_number - zstar; k++) {
+            n++;
+            if (k < atomic_number - zstar - 1 &&
+                p_binding_energies[k] == p_binding_energies[k + 1]) {
+                continue;
+            }
+            const Real I = p_binding_energies[k] + shift;    // binding energy of the shell (eV)
+            // Ar has its own set; Rb and Xe use the Kr set
+            const Real* p_outer = (atomic_number == 18) ? par_ar : par_kr;
+            const Real* p = (I > 2.0_rt * p_ionization_energies[zstar]) ? par_in : p_outer;
+
+            // Reduced projectile velocity, v^2 = T/I with T = m_e c^2 beta^2 / 2
+            const Real v2 = beta2 * me_c2 / (2.0_rt * I);
+            const Real v = std::sqrt(v2);
+
+            // Soft (dipole) strength F1 = L1 + H1, with the relativistic Bethe logarithm in H1
+            const Real L1 = p[2] * std::pow(v, p[3]) / (1.0_rt + p[4] * std::pow(v, p[3] + 4.0_rt));
+            const Real H1 = p[0] * (std::log1p(gamma * gamma * v2) - beta2) / (v2 + p[1] / v2);
+            const Real F1 = L1 + H1;
+            // Hard (Rutherford) strength F2 = L2 H2 / (L2 + H2)
+            const Real L2 = p[7] * std::pow(v, p[8]);
+            const Real H2 = p[5] / v2 + p[6] / (v2 * v2);
+            const Real F2 = L2 * H2 / (L2 + H2);
+
+            // Reduced cut-off energy
+            const Real wc = w_max / I - 2.0_rt * v - rydberg / (4.0_rt * I);
+
+            if (wc > 0.0_rt) {
+                // J_n = int_0^wc w^n / (1+w)^3 dw
+                const Real q = 1.0_rt / (1.0_rt + wc);
+                const Real J0 = 0.5_rt * (1.0_rt - q * q);
+                const Real J1 = (1.0_rt - q) - J0;
+                const Real J2 = std::log1p(wc) - 2.0_rt * (1.0_rt - q) + J0;
+                const Real S = 4.0_rt * MathConst::pi * a0 * a0 * n * (rydberg / I) * (rydberg / I);
+                sigma  += S * (F1 * J0 + F2 * J1);
+                moment += S * I * (F1 * J1 + F2 * J2);
+            }
+            n = 0;   // reset degeneracy for the next shell
+        }
+        w_mean = (sigma > 0.0_rt) ? moment / sigma : 0.0_rt;
+
+        // Neutral Ar and Xe, fast projectile (beta > 0.5): total cross section from the Bethe
+        // formula with the constants measured by Rieke and Prepejchal, Phys. Rev. A 6, 1507 (1972),
+        //     sigma = 4 pi (hbar/mc)^2 / beta^2 [M^2 (ln(beta^2 gamma^2) - beta^2) + C],
+        // 4 pi (hbar/mc)^2 = 1.874e-24 m^2. The Rudd spectrum above still gives w_mean.
+        if (zstar == 0 && beta2 > 0.25_rt && sigma > 0.0_rt &&
+            (atomic_number == 18 || atomic_number == 54)) {
+            // Ar: Rieke & Prepejchal (1972), measured. Xe: Kim et al. (2000), counting ionization
+            const Real M2 = (atomic_number == 18) ? 4.22_rt  : 5.157_rt;
+            const Real C  = (atomic_number == 18) ? 37.93_rt : 57.96_rt;
+            sigma = 1.874e-24_rt / beta2 * (M2 * (std::log(beta2 * gamma * gamma) - beta2) + C);
+        }
     }
 }
 
